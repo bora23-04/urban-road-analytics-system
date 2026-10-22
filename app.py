@@ -21,7 +21,10 @@ from config import (
     DEFAULT_WEIGHTS, ACCIDENT_WEIGHTS, DEFAULT_PRIORITY_THRESHOLDS,
     PRIORITY_COLORS, SEVERITY_COLORS
 )
-from utils.formatting import format_number, format_percentage, priority_badge_html, status_badge_html, metric_card_html
+from utils.formatting import (
+    format_number, format_percentage, priority_badge_html,
+    status_badge_html, metric_card_html, safe_style_dataframe
+)
 from utils.helpers import detect_dataset_type
 from utils.export import (
     dataframe_to_csv_bytes, dataframes_to_excel_bytes,
@@ -411,11 +414,8 @@ elif nav_choice == "3. Data Quality & Validation":
                 return "background-color: #fee2e2; color: #991b1b; font-weight: bold;"
 
 
-        st.dataframe(
-            val_df.style.applymap(style_status, subset=["Status"]),
-            use_container_width=True,
-            height=480
-        )
+        styled_val_df = safe_style_dataframe(val_df, style_status, subset=["Status"])
+        st.dataframe(styled_val_df, use_container_width=True, height=480)
 
 # =============================================================
 # MODULE 4: EXPLORATORY DATA ANALYSIS (EDA)
@@ -1022,11 +1022,8 @@ elif nav_choice == "11. Testing & Validation":
             return "background-color: #fee2e2; color: #991b1b; font-weight: bold;"
 
 
-    st.dataframe(
-        test_table.style.applymap(test_status_styler, subset=["Status"]),
-        use_container_width=True,
-        height=450
-    )
+    styled_test_table = safe_style_dataframe(test_table, test_status_styler, subset=["Status"])
+    st.dataframe(styled_test_table, use_container_width=True, height=450)
 
 # =============================================================
 # MODULE 12: EXPORT RESULTS & REPORTS
