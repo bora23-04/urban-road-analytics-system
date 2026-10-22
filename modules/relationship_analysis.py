@@ -19,10 +19,6 @@ def analyze_bivariate_relationship(
     title: str,
     color_col: str = None
 ) -> Tuple[go.Figure, float, int, str]:
-    """
-    Computes Pearson correlation coefficient and renders an interactive scatter plot
-    with OLS trendline and non-causal diagnostic summary.
-    """
     if df is None or x_col not in df.columns or y_col not in df.columns:
         return None, 0.0, 0, f"Attributes '{x_col}' or '{y_col}' are missing."
         
@@ -30,16 +26,13 @@ def analyze_bivariate_relationship(
     valid_df = valid_df[(pd.to_numeric(valid_df[x_col], errors='coerce').notnull()) & 
                         (pd.to_numeric(valid_df[y_col], errors='coerce').notnull())]
     
-    # Exclude all-zero pairs if desired, or sample for smooth rendering if huge
     obs_count = len(valid_df)
     if obs_count < 3:
         return None, 0.0, 0, "Insufficient paired observations to evaluate relationship."
         
-    sample_df = valid_df.sample(n=min(4000, obs_count), random_state=42)
-    
+    sample_df = valid_df.sample(n=min(4000, obs_count), random_state=42).copy()
     corr = float(valid_df[x_col].corr(valid_df[y_col]))
     
-    # Classify strength and direction
     direction = "positive" if corr > 0 else "negative"
     abs_corr = abs(corr)
     if abs_corr >= 0.7:
@@ -51,18 +44,40 @@ def analyze_bivariate_relationship(
     else:
         strength = "negligible / minimal"
         
-    fig = px.scatter(
-        sample_df,
-        x=x_col,
-        y=y_col,
-        color=color_col if color_col in sample_df.columns else None,
-        hover_data=["Road_ID", "Road_Name"] if "Road_Name" in sample_df.columns else ["Road_ID"],
-        trendline="ols",
-        opacity=0.45,
-        title=f"{title} (r = {corr:.2f}, N = {obs_count:,})",
-        labels={x_col: x_label, y_col: y_label},
-        color_discrete_sequence=["#2563eb"]
-    )
+    try:
+        fig = px.scatter(
+            sample_df,
+            x=x_col,
+            y=y_col,
+            color=color_col if color_col in sample_df.columns else None,
+            hover_data=["Road_ID", "Road_Name"] if "Road_Name" in sample_df.columns else ["Road_ID"],
+            trendline="ols",
+            opacity=0.45,
+            title=f"{title} (r = {corr:.2f}, N = {obs_count:,})",
+            labels={x_col: x_label, y_col: y_label},
+            color_discrete_sequence=["#2563eb"]
+        )
+    except Exception:
+        fig = px.scatter(
+            sample_df,
+            x=x_col,
+            y=y_col,
+            color=color_col if color_col in sample_df.columns else None,
+            hover_data=["Road_ID", "Road_Name"] if "Road_Name" in sample_df.columns else ["Road_ID"],
+            opacity=0.45,
+            title=f"{title} (r = {corr:.2f}, N = {obs_count:,})",
+            labels={x_col: x_label, y_col: y_label},
+            color_discrete_sequence=["#2563eb"]
+        )
+        x = pd.to_numeric(sample_df[x_col], errors='coerce').to_numpy()
+        y = pd.to_numeric(sample_df[y_col], errors='coerce').to_numpy()
+        mask = (~np.isnan(x)) & (~np.isnan(y))
+        if mask.sum() > 2:
+            slope, intercept = np.polyfit(x[mask], y[mask], 1)
+            x_line = np.linspace(x[mask].min(), x[mask].max(), 100)
+            y_line = slope * x_line + intercept
+            fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines", name="Linear Trend", line=dict(color="red", width=2)))
+            
     fig.update_layout(template="plotly_white", height=420)
     
     interp = (
@@ -70,7 +85,6 @@ def analyze_bivariate_relationship(
         f"(Pearson r = {corr:.2f}, based on {obs_count:,} road observations). "
         f"Statistical co-variation reflects empirical concurrency within the network and does NOT establish direct causality."
     )
-    
     return fig, corr, obs_count, interp
 
 def get_all_relationship_analyses(summary_df: pd.DataFrame) -> Dict[str, Dict]:
