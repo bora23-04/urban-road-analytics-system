@@ -21,10 +21,28 @@ from config import (
     DEFAULT_WEIGHTS, ACCIDENT_WEIGHTS, DEFAULT_PRIORITY_THRESHOLDS,
     PRIORITY_COLORS, SEVERITY_COLORS
 )
-from utils.formatting import (
-    format_number, format_percentage, priority_badge_html,
-    status_badge_html, metric_card_html, safe_style_dataframe
-)
+try:
+    from utils.formatting import (
+        format_number, format_percentage, priority_badge_html,
+        status_badge_html, metric_card_html, safe_style_dataframe
+    )
+except ImportError:
+    from utils.formatting import (
+        format_number, format_percentage, priority_badge_html,
+        status_badge_html, metric_card_html
+    )
+    def safe_style_dataframe(df, styler_fn, subset=None):
+        if df is None or getattr(df, 'empty', True):
+            return df
+        try:
+            styler = df.style
+            if hasattr(styler, "map"):
+                return styler.map(styler_fn, subset=subset)
+            elif hasattr(styler, "applymap"):
+                return styler.applymap(styler_fn, subset=subset)
+            return df
+        except Exception:
+            return df
 from utils.helpers import detect_dataset_type
 from utils.export import (
     dataframe_to_csv_bytes, dataframes_to_excel_bytes,
