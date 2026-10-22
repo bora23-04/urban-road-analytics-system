@@ -137,25 +137,43 @@ def plot_weekday_vs_weekend(traffic_df: pd.DataFrame) -> Tuple[go.Figure, str]:
     return None, "Day of week data unavailable."
 
 def plot_speed_vs_volume_scatter(traffic_df: pd.DataFrame) -> Tuple[go.Figure, str]:
-    """Scatter plot showing observed Speed vs Vehicle Volume relationship."""
+    """Scatter plot showing observed Speed vs Vehicle Volume relationship with robust trendline."""
     if traffic_df is None or "Vehicle_Count" not in traffic_df.columns or "Average_Speed_KMH" not in traffic_df.columns:
         return None, "Speed or vehicle count columns missing."
         
-    # Sample 3000 points if dataset is large to maintain crisp interactive performance
-    sample_df = traffic_df.sample(n=min(3000, len(traffic_df)), random_state=42)
+    sample_df = traffic_df.sample(n=min(3000, len(traffic_df)), random_state=42).copy()
     
-    fig = px.scatter(
-        sample_df,
-        x="Vehicle_Count",
-        y="Average_Speed_KMH",
-        opacity=0.4,
-        trendline="ols",
-        title="Macroscopic Speed-Flow Relationship: Average Speed vs Vehicle Volume",
-        labels={"Vehicle_Count": "Observed Vehicle Count (vehicles/hr)", "Average_Speed_KMH": "Average Speed (KM/H)"},
-        color_discrete_sequence=["#3b82f6"]
-    )
+    try:
+        fig = px.scatter(
+            sample_df,
+            x="Vehicle_Count",
+            y="Average_Speed_KMH",
+            opacity=0.4,
+            trendline="ols",
+            title="Macroscopic Speed-Flow Relationship: Average Speed vs Vehicle Volume",
+            labels={"Vehicle_Count": "Observed Vehicle Count (vehicles/hr)", "Average_Speed_KMH": "Average Speed (KM/H)"},
+            color_discrete_sequence=["#3b82f6"]
+        )
+    except Exception:
+        fig = px.scatter(
+            sample_df,
+            x="Vehicle_Count",
+            y="Average_Speed_KMH",
+            opacity=0.4,
+            title="Macroscopic Speed-Flow Relationship: Average Speed vs Vehicle Volume",
+            labels={"Vehicle_Count": "Observed Vehicle Count (vehicles/hr)", "Average_Speed_KMH": "Average Speed (KM/H)"},
+            color_discrete_sequence=["#3b82f6"]
+        )
+        x = sample_df["Vehicle_Count"].to_numpy()
+        y = sample_df["Average_Speed_KMH"].to_numpy()
+        mask = (~np.isnan(x)) & (~np.isnan(y))
+        if mask.sum() > 2:
+            slope, intercept = np.polyfit(x[mask], y[mask], 1)
+            x_range = np.linspace(x[mask].min(), x[mask].max(), 100)
+            y_range = slope * x_range + intercept
+            fig.add_trace(go.Scatter(x=x_range, y=y_range, mode="lines", name="Linear Trend", line=dict(color="red", width=2)))
+            
     fig.update_layout(template="plotly_white", height=420)
-    
     corr = sample_df["Vehicle_Count"].corr(sample_df["Average_Speed_KMH"])
     interp = f"The speed-flow relationship displays an inverse empirical correlation (r = {corr:.2f}), matching classical traffic engineering principles where higher volumes constrain operating velocities."
     return fig, interp
