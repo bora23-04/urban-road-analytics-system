@@ -1,57 +1,91 @@
 """
-GIS and Geospatial Infrastructure Analysis Module.
-Utilizes GeoPandas, Shapely, and Plotly OpenStreetMap engines for geospatial analysis.
-Completely deterministic and explainable GIS analytics.
+GIS Analysis Module for Urban Road Analytics and Maintenance Assessment System.
+Combines GeoPandas geospatial vector processing (with safe fallback) and
+interactive Plotly OpenStreetMap + Folium mapping engines.
 """
 
+import os
+import sys
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Dict, Any, List, Optional
+from typing import Dict, Tuple, Optional, Any
 
-# Optional GeoPandas / Shapely integration
+# Safe import for GeoPandas & Shapely
 try:
     import geopandas as gpd
-    from shapely.geometry import Point, LineString
+    from shapely.geometry import Point
     HAS_GEOPANDAS = True
 except ImportError:
     HAS_GEOPANDAS = False
 
-# Optional Folium
+# Safe import for Folium
 try:
     import folium
-    from folium.plugins import MarkerCluster, HeatMap
+    from folium.plugins import MarkerCluster, Fullscreen
     HAS_FOLIUM = True
 except ImportError:
     HAS_FOLIUM = False
 
-from config import PRIORITY_COLORS, SEVERITY_COLORS, MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM
-from maps.map_utils import create_base_map, add_legend_to_map, add_tile_layers
+# Safe import for Map utilities with embedded fallback
+try:
+    from maps.map_utils import create_base_map, create_priority_popup_html, add_priority_legend_to_map
+except Exception:
+    def create_base_map(center=None, zoom=11, tiles="OpenStreetMap"):
+        if not HAS_FOLIUM:
+            return None
+        c = center if center is not None else [28.6275, 77.1709]
+        return folium.Map(location=c, zoom_start=zoom, tiles=tiles)
+
+    def create_priority_popup_html(row):
+        name = row.get("Road_Name", "Road")
+        score = row.get("Maintenance_Score", 0)
+        prio = row.get("Priority_Level", "Medium")
+        return f"<b>{name}</b><br>ID: {row.get('Road_ID', '')}<br>Priority: {prio}<br>Score: {score:.1f}"
+
+    def add_priority_legend_to_map(m):
+        pass
+
+from config import MAP_DEFAULT_CENTER, PRIORITY_COLORS, SEVERITY_COLORS
 
 # ----------------------------------------------------------------------
 # VECTOR & GEODATAFRAME CONVERSION
 # ----------------------------------------------------------------------
 
-def convert_to_geodataframe(df: pd.DataFrame, lat_col: str = "Latitude", lon_col: str = "Longitude"):
+def convert_to_geodataframe(df: pd.DataFrame, lat_col="Latitude", lon_col="Longitude"):
     """
-    Converts a pandas DataFrame with lat/long columns into a GeoPandas GeoDataFrame with WGS84 CRS (EPSG:4326).
+    Safely converts a DataFrame into a GeoDataFrame (if geopandas available)
+    or a validated coordinate DataFrame.
     """
-    if not HAS_GEOPANDAS or df is None or df.empty:
-        return df
+    if df is None or df.empty or lat_col not in df.columns or lon_col not in df.columns:
+        return None
         
-    valid_coords = df.dropna(subset=[lat_col, lon_col]).copy()
-    if valid_coords.empty:
-        return valid_coords
+    valid_pts = df[
+        pd.to_numeric(df[lat_col], errors='coerce').notnull() &
+        pd.to_numeric(df[lon_col], errors='coerce').notnull() &
+        (df[lat_col] >= -90) & (df[lat_col] <= 90) &
+        (df[lon_col] >= -180) & (df[lon_col] <= 180)
+    ].copy()
+    
+    if valid_pts.empty:
+        return None
         
-    geometry = [Point(xy) for xy in zip(valid_coords[lon_col], valid_coords[lat_col])]
-    gdf = gpd.GeoDataFrame(valid_coords, geometry=geometry, crs="EPSG:4326")
-    return gdf
+    if HAS_GEOPANDAS:
+        try:
+            return gpd.GeoDataFrame(
+                valid_pts,
+                geometry=gpd.points_from_xy(valid_pts[lon_col], valid_pts[lat_col]),
+                crs="EPSG:4326"
+            )
+        except Exception:
+            return valid_pts
+    return valid_pts
 
 
 def get_geospatial_summary(df: pd.DataFrame, lat_col: str = "Latitude", lon_col: str = "Longitude") -> Dict[str, Any]:
     """Computes bounding box and geospatial metadata for the urban network."""
-    if df is None or df.empty:
+    if df is None or df.empty or lat_col not in df.columns or lon_col not in df.columns:
         return {}
         
     valid = df.dropna(subset=[lat_col, lon_col])
@@ -77,7 +111,7 @@ def get_geospatial_summary(df: pd.DataFrame, lat_col: str = "Latitude", lon_col:
     }
 
 # ----------------------------------------------------------------------
-# 1. NATIVE PLOTLY INTERACTIVE MAPS (100% RELIABLE OPENSTREETMAP TILES)
+# 1. NATIVE PLOTLY OPENSTREETMAP INTERACTIVE GIS MAPS
 # ----------------------------------------------------------------------
 
 def _render_safe_osm_map(
@@ -317,7 +351,7 @@ def build_road_location_map(summary_df: pd.DataFrame, max_points: int = 1500):
     if valid.empty:
         return create_base_map()
     meta = get_geospatial_summary(valid)
-    m = create_base_map(center=[meta["center_lat"], meta["center_lon"]], zoom=11)
+    m = create_base_map(center=[meta.get("center_lat", 28.6275), meta.get("center_lon", 77.1709)], zoom=11)
     plot_df = valid.sample(n=min(max_points, len(valid)), random_state=42) if len(valid) > max_points else valid
     fg = folium.FeatureGroup(name="Road Master Assets")
     for _, row in plot_df.iterrows():
@@ -339,93 +373,94 @@ def build_traffic_spatial_map(summary_df: pd.DataFrame, metric: str = "Avg_Vehic
     if valid.empty:
         return create_base_map()
     meta = get_geospatial_summary(valid)
-    m = create_base_map(center=[meta["center_lat"], meta["center_lon"]], zoom=11)
+    m = create_base_map(center=[meta.get("center_lat", 28.6275), meta.get("center_lon", 77.1709)], zoom=11)
     plot_df = valid.sample(n=min(max_points, len(valid)), random_state=42) if len(valid) > max_points else valid
-    max_val = plot_df[metric].max() if metric in plot_df.columns and plot_df[metric].max() > 0 else 1.0
-    fg = folium.FeatureGroup(name=f"Traffic: {metric}")
+    val_series = pd.to_numeric(plot_df.get(metric, 0), errors='coerce').fillna(0)
+    v_min, v_max = val_series.min(), val_series.max()
+    fg = folium.FeatureGroup(name=f"Traffic: {metric.replace('_', ' ')}")
     for _, row in plot_df.iterrows():
         lat, lon = row["Latitude"], row["Longitude"]
         val = row.get(metric, 0)
-        norm_val = val / max_val
-        if norm_val > 0.66:
-            c = "#d9534f"
-        elif norm_val > 0.33:
-            c = "#f0ad4e"
-        else:
-            c = "#5cb85c"
+        radius = 3 + ((val - v_min) / (v_max - v_min)) * 9 if v_max > v_min else 5
+        color = "#ef4444" if val > val_series.quantile(0.75) else ("#f59e0b" if val > val_series.quantile(0.5) else "#3b82f6")
         folium.CircleMarker(
-            location=[lat, lon], radius=4 + int(norm_val * 6), color=c, fill=True, fill_color=c, fill_opacity=0.75,
-            popup=folium.Popup(f"<b>{row.get('Road_Name', 'Road')}</b><br>{metric}: {val:,.1f}", max_width=250),
-            tooltip=f"{row.get('Road_Name', '')}: {val:,.1f}"
+            location=[lat, lon], radius=radius, color=color, fill=True, fill_color=color, fill_opacity=0.7,
+            popup=folium.Popup(f"<b>{row.get('Road_Name', 'Road')}</b><br>{metric}: {val:.1f}", max_width=250),
+            tooltip=f"{row.get('Road_Name')}: {val:.1f}"
         ).add_to(fg)
     fg.add_to(m)
     folium.LayerControl().add_to(m)
     return m
 
-def build_accident_heatmap(accidents_df: pd.DataFrame, max_points: int = 2500):
-    if not HAS_FOLIUM or accidents_df is None or accidents_df.empty:
+def build_accident_spatial_map(accidents_df: pd.DataFrame, severity_filter: list = None, max_points: int = 2500):
+    if not HAS_FOLIUM or accidents_df is None:
         return None
     valid = accidents_df.dropna(subset=["Latitude", "Longitude"])
     if valid.empty:
         return create_base_map()
+    if severity_filter:
+        valid = valid[valid["Accident_Severity"].isin(severity_filter)]
     meta = get_geospatial_summary(valid)
-    m = create_base_map(center=[meta["center_lat"], meta["center_lon"]], zoom=11)
+    m = create_base_map(center=[meta.get("center_lat", 28.6275), meta.get("center_lon", 77.1709)], zoom=11)
     plot_df = valid.sample(n=min(max_points, len(valid)), random_state=42) if len(valid) > max_points else valid
-    heat_data = [[row["Latitude"], row["Longitude"], float(row.get("Fatalities", 0) * 2 + 1)] for _, row in plot_df.iterrows()]
-    HeatMap(heat_data, radius=12, blur=15, max_zoom=13).add_to(m)
+    cluster = MarkerCluster(name="Recorded Accidents Cluster").add_to(m)
+    for _, row in plot_df.iterrows():
+        lat, lon = row["Latitude"], row["Longitude"]
+        sev = row.get("Accident_Severity", "Minor")
+        color = SEVERITY_COLORS.get(sev, "#3b82f6")
+        folium.CircleMarker(
+            location=[lat, lon], radius=5, color=color, fill=True, fill_color=color, fill_opacity=0.8,
+            popup=folium.Popup(f"<b>{row.get('Accident_ID')}</b><br>Severity: {sev}", max_width=260),
+            tooltip=f"{sev} Accident"
+        ).add_to(cluster)
+    folium.LayerControl().add_to(m)
     return m
 
-def build_pothole_cluster_map(potholes_df: pd.DataFrame, max_points: int = 2500):
-    if not HAS_FOLIUM or potholes_df is None or potholes_df.empty:
+def build_road_condition_spatial_map(potholes_df: pd.DataFrame, max_points: int = 2500):
+    if not HAS_FOLIUM or potholes_df is None:
         return None
     valid = potholes_df.dropna(subset=["Latitude", "Longitude"])
     if valid.empty:
         return create_base_map()
     meta = get_geospatial_summary(valid)
-    m = create_base_map(center=[meta["center_lat"], meta["center_lon"]], zoom=11)
+    m = create_base_map(center=[meta.get("center_lat", 28.6275), meta.get("center_lon", 77.1709)], zoom=11)
     plot_df = valid.sample(n=min(max_points, len(valid)), random_state=42) if len(valid) > max_points else valid
-    cluster = MarkerCluster(name="Reported Defect Clusters").add_to(m)
+    cluster = MarkerCluster(name="Road Distress / Potholes").add_to(m)
     for _, row in plot_df.iterrows():
         lat, lon = row["Latitude"], row["Longitude"]
+        sev = str(row.get("Severity", "Medium")).title()
+        color = SEVERITY_COLORS.get(sev, "#f0ad4e")
         folium.CircleMarker(
-            location=[lat, lon], radius=5, color="#d9534f" if row.get("Severity") == "Critical" else "#f0ad4e",
-            fill=True, fill_opacity=0.8,
-            popup=f"<b>ID:</b> {row.get('Complaint_ID')}<br><b>Damage:</b> {row.get('Road_Damage_Percent', 0)}%"
+            location=[lat, lon], radius=5, color=color, fill=True, fill_color=color, fill_opacity=0.75,
+            popup=folium.Popup(f"<b>{row.get('Complaint_ID')}</b><br>Damage: {row.get('Road_Damage_Percent', 0):.1f}%", max_width=260),
+            tooltip=f"{sev} Distress"
         ).add_to(cluster)
     folium.LayerControl().add_to(m)
     return m
 
 def build_maintenance_priority_map(priority_df: pd.DataFrame, max_points: int = 2000):
-    if not HAS_FOLIUM or priority_df is None or priority_df.empty:
+    if not HAS_FOLIUM or priority_df is None:
         return None
     valid = priority_df.dropna(subset=["Latitude", "Longitude"])
     if valid.empty:
         return create_base_map()
     meta = get_geospatial_summary(valid)
-    m = create_base_map(center=[meta["center_lat"], meta["center_lon"]], zoom=11)
+    m = create_base_map(center=[meta.get("center_lat", 28.6275), meta.get("center_lon", 77.1709)], zoom=11)
     plot_df = valid.sample(n=min(max_points, len(valid)), random_state=42) if len(valid) > max_points else valid
-    fg_high = folium.FeatureGroup(name="High Priority (Red)")
-    fg_med = folium.FeatureGroup(name="Medium Priority (Amber)")
-    fg_low = folium.FeatureGroup(name="Low Priority (Green)")
+    fg_high = folium.FeatureGroup(name="🔴 High Priority")
+    fg_med = folium.FeatureGroup(name="🟠 Medium Priority")
+    fg_low = folium.FeatureGroup(name="🟢 Low Priority")
     for _, row in plot_df.iterrows():
         lat, lon = row["Latitude"], row["Longitude"]
-        prio = row.get("Priority_Level", "Low")
-        score = row.get("Maintenance_Score", 0.0)
-        factors = row.get("Contributing_Factors", "N/A")
-        color = PRIORITY_COLORS.get(prio, "#5cb85c")
-        popup_html = f"""<div style="font-family: Arial, sans-serif; font-size: 12px; width: 200px;">
-            <b style="color: {color}; font-size: 14px;">{prio} Priority</b><br>
-            <b>Road:</b> {row.get('Road_Name', 'N/A')}<br>
-            <b>ID:</b> {row.get('Road_ID', 'N/A')}<br>
-            <b>Score:</b> {score:.1f} / 100<br>
-            <hr style="margin: 4px 0;">
-            <b>Rationale:</b> {factors}
-        </div>"""
+        prio = row.get("Priority_Level", "Medium")
+        color = PRIORITY_COLORS.get(prio, "#f0ad4e")
+        popup_html = create_priority_popup_html(row)
+        radius = 7 if prio == "High" else (5 if prio == "Medium" else 3.5)
         marker = folium.CircleMarker(
-            location=[lat, lon], radius=5 if prio == "Low" else (7 if prio == "Medium" else 9),
-            color=color, fill=True, fill_color=color, fill_opacity=0.85,
-            popup=folium.Popup(popup_html, max_width=250),
-            tooltip=f"{row.get('Road_Name', 'Road')} - {prio} ({score:.1f})"
+            location=[lat, lon], radius=radius, color=color, fill=True, fill_color=color,
+            fill_opacity=0.85 if prio == "High" else 0.7,
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{prio} Priority ({row.get('Maintenance_Score', 0):.1f}) - {row.get('Road_Name', 'Road')}"
         )
         if prio == "High":
             marker.add_to(fg_high)
@@ -436,14 +471,15 @@ def build_maintenance_priority_map(priority_df: pd.DataFrame, max_points: int = 
     fg_high.add_to(m)
     fg_med.add_to(m)
     fg_low.add_to(m)
-    folium.LayerControl().add_to(m)
+    add_priority_legend_to_map(m)
+    folium.LayerControl(collapsed=False).add_to(m)
     return m
 
-def aggregate_by_administrative_zone(priority_df: pd.DataFrame) -> pd.DataFrame:
+def aggregate_by_administrative_zone(summary_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregates maintenance priority scores and counts across administrative zones."""
-    if priority_df is None or priority_df.empty or "Zone" not in priority_df.columns:
+    if summary_df is None or "Zone" not in summary_df.columns:
         return pd.DataFrame()
-    grouped = priority_df.groupby("Zone").agg(
+    grouped = summary_df.groupby("Zone").agg(
         Total_Roads=("Road_ID", "count"),
         High_Priority_Roads=("Priority_Level", lambda x: (x == "High").sum()),
         Medium_Priority_Roads=("Priority_Level", lambda x: (x == "Medium").sum()),
